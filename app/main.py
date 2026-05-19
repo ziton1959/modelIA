@@ -1,4 +1,3 @@
-cat > app/main.py << 'EOF'
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.database import engine, Base
