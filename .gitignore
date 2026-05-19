@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+*.log
+*.tmp
+packer/output/
+packer/packer_cache/
+ansible/.retry
+*.retry
+.DS_Store

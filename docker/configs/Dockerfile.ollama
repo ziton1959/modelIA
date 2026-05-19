@@ -1,0 +1,3 @@
+FROM ollama/ollama:latest
+COPY zscaler.crt /usr/local/share/ca-certificates/zscaler.crt
+RUN update-ca-certificates
