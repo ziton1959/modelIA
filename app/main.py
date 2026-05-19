@@ -30,4 +30,3 @@ app.include_router(vm_create_router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-EOF
