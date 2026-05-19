@@ -47,7 +47,7 @@ def validate_spec(spec: dict) -> tuple[bool, str]:
 
 
 async def parse_vm_request(user_prompt: str) -> dict:
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=300.0, trust_env=False) as client:
         response = await client.post(OLLAMA_URL, json={
             "model": MODEL,
             "prompt": f"{SYSTEM_PROMPT}\n\nUser request: {user_prompt}",
