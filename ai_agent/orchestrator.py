@@ -54,7 +54,7 @@ async def parse_vm_request(user_prompt: str) -> dict:
         stream=False
     )
 
-    raw = response.response
+    raw = response["response"]
     spec = extract_json(raw)
 
     if spec is None:
