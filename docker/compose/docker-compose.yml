@@ -1,23 +1,23 @@
 services:
 
-  postgres:
-    image: postgres:16-alpine
-    container_name: if-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: imagefactory
-      POSTGRES_USER: ifuser
-      POSTGRES_PASSWORD: ifpass123
-      PGDATA: /var/lib/postgresql/data/pgdata
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ifuser -d imagefactory"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+ postgres:
+  image: postgres:16-alpine
+  container_name: if-postgres
+  restart: unless-stopped
+  environment:
+    POSTGRES_DB: imagefactory
+    POSTGRES_USER: imagefactory
+    POSTGRES_PASSWORD: strongpassword
+    PGDATA: /var/lib/postgresql/data/pgdata
+  volumes:
+    - postgres_data:/var/lib/postgresql/data
+  ports:
+    - "5432:5432"
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U imagefactory -d imagefactory"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
 
   minio:
     image: minio/minio:latest
