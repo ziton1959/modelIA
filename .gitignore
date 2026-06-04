@@ -11,3 +11,4 @@ packer/packer_cache/
 ansible/.retry
 *.retry
 .DS_Store
+*.deb
