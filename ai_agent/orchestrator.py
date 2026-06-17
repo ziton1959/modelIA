@@ -1,10 +1,9 @@
-import httpx
+import ollama
 import json
 import re
 from typing import Optional
 
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL = "llama3.1:70b"
 
 SYSTEM_PROMPT = """You are a VM provisioning assistant for an enterprise platform.
@@ -47,16 +46,15 @@ def validate_spec(spec: dict) -> tuple[bool, str]:
 
 
 async def parse_vm_request(user_prompt: str) -> dict:
-    async with httpx.AsyncClient(timeout=300.0, trust_env=False) as client:
-        response = await client.post(OLLAMA_URL, json={
-            "model": MODEL,
-            "prompt": f"{SYSTEM_PROMPT}\n\nUser request: {user_prompt}",
-            "stream": False
-        })
-        response.raise_for_status()
-        data = response.json()
+    client = ollama.AsyncClient(host="http://127.0.0.1:11434")
 
-    raw = data.get("response", "")
+    response = await client.generate(
+        model=MODEL,
+        prompt=f"{SYSTEM_PROMPT}\n\nUser request: {user_prompt}",
+        stream=False
+    )
+
+    raw = response["response"]
     spec = extract_json(raw)
 
     if spec is None:
@@ -66,7 +64,6 @@ async def parse_vm_request(user_prompt: str) -> dict:
     if not valid:
         return {"error": f"invalid spec: {reason}", "raw": raw}
 
-    # normalize template_name if LLM left it empty
     if not spec.get("template_name"):
         packages_slug = "-".join(p.lower() for p in spec["packages"])
         os_slug = spec["os"].lower().replace(" ", "-").replace(".", "")
