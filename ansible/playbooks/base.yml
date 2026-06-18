@@ -3,6 +3,18 @@
   hosts: all
   become: true
 
+  vars:
+    packages: []
+
+    package_name_map:
+      docker: docker.io
+      python: python3
+      python3: python3
+      "python3.12": python3
+      pip: python3-pip
+      node: nodejs
+      nodejs: nodejs
+
   tasks:
     - name: Update apt cache
       apt:
@@ -19,6 +31,17 @@
           - htop
           - vim
         state: present
+
+    - name: Translate requested packages to real apt names
+      set_fact:
+        final_packages: "{{ final_packages | default([]) + [ package_name_map[item | lower] | default(item) ] }}"
+      loop: "{{ packages }}"
+
+    - name: Install requested packages
+      apt:
+        name: "{{ final_packages }}"
+        state: present
+      when: final_packages | default([]) | length > 0
 
     - name: Clean apt cache
       apt:

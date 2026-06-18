@@ -54,6 +54,7 @@ def _minio_client():
 
 
 def pick_base_image(os_name):
+    """Return (image_object_name, matched). matched=False means we fell back."""
     key = (os_name or "").strip().lower()
     if key in BASE_IMAGE_MAP:
         return BASE_IMAGE_MAP[key], True
@@ -61,6 +62,7 @@ def pick_base_image(os_name):
 
 
 def write_cloud_init(workdir):
+    """Write user-data + meta-data so the booted image has an SSH login."""
     ci_dir = workdir / "cloud-init"
     ci_dir.mkdir(parents=True, exist_ok=True)
     (ci_dir / "user-data").write_text(
@@ -103,6 +105,7 @@ def run_packer_init():
 
 
 def run_packer_build(spec, base_img, ci_dir, output_dir):
+    """Run packer build with -var flags derived from the spec."""
     vm_name = spec.get("template_name", "vm-image")
     cpu = int(spec.get("cpu", 2))
     ram_mb = int(spec.get("ram_gb", 4)) * 1024
@@ -143,6 +146,7 @@ def upload_built_image(client, output_dir, vm_name):
 
 
 def execute_pipeline(spec):
+    """Synchronous pipeline; called via run_in_executor from the route."""
     template_name = spec.get("template_name", "vm-image")
     result = {
         "template_name": template_name,
