@@ -109,7 +109,7 @@ def run_packer_build(spec, base_img, ci_dir, output_dir):
     vm_name = spec.get("template_name", "vm-image")
     cpu = int(spec.get("cpu", 2))
     ram_mb = int(spec.get("ram_gb", 4)) * 1024
-    packages_json = json.dumps(spec.get("packages", []))
+    packages_json = json.dumps({"packages": spec.get("packages", [])})
     cmd = [
         "packer", "build", "-force",
         "-var", "vm_name=" + vm_name,
