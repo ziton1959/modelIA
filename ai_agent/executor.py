@@ -142,10 +142,20 @@ def upload_built_image(client, output_dir, vm_name):
     qcow2 = output_dir / (vm_name + ".qcow2")
     if not qcow2.exists():
         return False, "expected output not found: " + str(qcow2)
+    # Flatten: merge backing file into a standalone image so it's self-contained.
+    flat = output_dir / (vm_name + "-flat.qcow2")
+    import subprocess
+    r = subprocess.run(
+        ["qemu-img", "convert", "-O", "qcow2", str(qcow2), str(flat)],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return False, "qemu-img convert failed: " + r.stderr
     ensure_bucket(client, BUILT_BUCKET)
     object_name = vm_name + ".qcow2"
-    client.fput_object(BUILT_BUCKET, object_name, str(qcow2))
+    client.fput_object(BUILT_BUCKET, object_name, str(flat))
     return True, BUILT_BUCKET + "/" + object_name
+
 
 
 def execute_pipeline(spec):
