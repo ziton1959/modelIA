@@ -70,11 +70,14 @@ def write_cloud_init(workdir):
         "ssh_pwauth: true\n"
         "users:\n"
         "  - name: packer\n"
-        "    plain_text_passwd: packer\n"
         "    lock_passwd: false\n"
         "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
         "    shell: /bin/bash\n"
         "    groups: sudo\n"
+        "chpasswd:\n"
+        "  expire: false\n"
+        "  list: |\n"
+        "    packer:packer\n"
     )
     (ci_dir / "meta-data").write_text(
         "instance-id: packer-build\n"

@@ -83,6 +83,7 @@ source "qemu" "base" {
   ssh_username = "packer"
   ssh_password = "packer"
   ssh_timeout  = "20m"
+  ssh_handshake_attempts = 100
 
   shutdown_command = "echo 'packer' | sudo -S shutdown -P now"
 }
