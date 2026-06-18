@@ -1,27 +1,48 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_db
 from app.crud.vm import create_vm
-from app.crud.job import create_job
-from app.schemas.vm import VMOut
+from app.crud.job import create_job, update_job
 from pydantic import BaseModel
 import sys
 import os
+import asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 from ai_agent.orchestrator import parse_vm_request
+from ai_agent.executor import execute_pipeline
+from app.database import AsyncSessionLocal
 
 router = APIRouter(prefix="/api/vm", tags=["vm-create"])
-
 
 class VMRequest(BaseModel):
     prompt: str
     owner_id: int = 1
 
+async def run_pipeline_background(job_id: int, spec: dict):
+    async with AsyncSessionLocal() as db:
+        try:
+            await update_job(db, job_id, status="running", logs="Pipeline started...")
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, execute_pipeline, spec)
+            if result.get("status") == "completed":
+                logs = result.get("packer_logs", "") + result.get("ansible_logs", "")
+                await update_job(db, job_id, status="completed", logs=logs)
+            else:
+                error = result.get("error", "Unknown error")
+                logs = result.get("packer_logs", "") + result.get("ansible_logs", "")
+                await update_job(db, job_id, status="failed", logs=f"ERROR: {error}\n{logs}")
+        except Exception as e:
+            print(f"Background task error: {e}")
+            async with AsyncSessionLocal() as db2:
+                await update_job(db2, job_id, status="failed", logs=f"Exception: {str(e)}")
 
 @router.post("/create")
-async def create_vm_from_prompt(payload: VMRequest, db: AsyncSession = Depends(get_db)):
+async def create_vm_from_prompt(
+    payload: VMRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
     spec = await parse_vm_request(payload.prompt)
-
     if "error" in spec:
         return {"status": "failed", "error": spec["error"]}
 
@@ -32,13 +53,14 @@ async def create_vm_from_prompt(payload: VMRequest, db: AsyncSession = Depends(g
         config=spec,
         owner_id=payload.owner_id
     )
-
     job = await create_job(
         db,
         type="vm.provision",
         owner_id=payload.owner_id,
         vm_id=vm.id
     )
+
+    background_tasks.add_task(run_pipeline_background, job.id, spec)
 
     return {
         "status": "queued",

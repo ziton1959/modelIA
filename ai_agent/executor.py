@@ -1,313 +1,206 @@
+"""
+Executor: turns a parsed VM spec into a built image.
 
-import subprocess
-import json
+Pipeline:
+  1. Pick the base image for the requested OS.
+  2. Download that golden image from MinIO  (base-images bucket).
+  3. Write a cloud-init seed (user-data / meta-data) for SSH login.
+  4. Run packer build against packer/ubuntu-base.pkr.hcl, which boots the
+     golden image and runs the Ansible playbook to install requested packages.
+  5. Upload the resulting qcow2 to MinIO        (vm-images bucket).
+  6. Return a result dict consumed by app/routes/vm_create.py.
+"""
+
 import os
-import tempfile
+import json
+import shutil
 import logging
+import subprocess
+import tempfile
 from pathlib import Path
+
+from minio import Minio
+from minio.error import S3Error
 
 logger = logging.getLogger(__name__)
 
-PACKER_TEMPLATES_DIR = Path(__file__).parent.parent / "packer" / "templates"
-ANSIBLE_PLAYBOOKS_DIR = Path(__file__).parent.parent / "ansible" / "playbooks"
+PROJECT_ROOT = Path(__file__).parent.parent
+PACKER_TEMPLATE = PROJECT_ROOT / "packer" / "ubuntu-base.pkr.hcl"
 
-# ─── PACKER ───────────────────────────────────────────────────────────────────
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
-def generate_packer_template(spec: dict) -> dict:
-    """Generate a Packer HCL2 template from a VM spec."""
-    os_name = spec.get("os", "Ubuntu 24.04")
-    packages = spec.get("packages", [])
-    template_name = spec.get("template_name", "base-image")
+BASE_BUCKET = os.getenv("MINIO_BASE_BUCKET", "base-images")
+BUILT_BUCKET = os.getenv("MINIO_BUILT_BUCKET", "vm-images")
 
-    # Map OS name to ISO details
-    os_map = {
-        "ubuntu 24.04": {
-            "iso_url": "https://releases.ubuntu.com/24.04/ubuntu-24.04-live-server-amd64.iso",
-            "iso_checksum": "sha256:8762f7e74e4d64d72fceb5f70682e6b069932deedb4949c6975d0f0fe0a91be3",
-            "guest_os_type": "Ubuntu_64"
-        },
-        "ubuntu 22.04": {
-            "iso_url": "https://releases.ubuntu.com/22.04/ubuntu-22.04.4-live-server-amd64.iso",
-            "iso_checksum": "sha256:45f873de9f8cb637345d6e66a583762730bbea30277ef7b32c9c3bd6700a32b2",
-            "guest_os_type": "Ubuntu_64"
-        },
-    }
-
-    os_key = os_name.lower()
-    os_config = os_map.get(os_key, os_map["ubuntu 24.04"])
-    packages_install = " ".join(packages)
-
-    packer_spec = {
-        "template_name": template_name,
-        "os": os_name,
-        "iso_url": os_config["iso_url"],
-        "iso_checksum": os_config["iso_checksum"],
-        "packages": packages,
-        "shell_commands": [
-            "apt-get update -y",
-            f"apt-get install -y {packages_install}" if packages else "echo 'no packages'",
-            "apt-get clean"
-        ]
-    }
-
-    return packer_spec
+BASE_IMAGE_MAP = {
+    "ubuntu 24.04": "ubuntu-24.04.img",
+    "ubuntu 22.04": "ubuntu-22.04.img",
+    "debian 12":    "debian-12.qcow2",
+    "rocky 9":      "Rocky-9.qcow2",
+}
+DEFAULT_IMAGE = "ubuntu-22.04.img"
 
 
-def write_packer_template(spec: dict, output_dir: Path) -> Path:
-    """Write a Packer HCL2 template file to disk."""
-    template_name = spec.get("template_name", "base-image")
-    packages = spec.get("packages", [])
-    packages_install = " ".join(packages)
-    iso_url = spec.get("iso_url", "")
-    iso_checksum = spec.get("iso_checksum", "")
+def _minio_client():
+    return Minio(
+        MINIO_ENDPOINT,
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
+        secure=MINIO_SECURE,
+    )
 
-    hcl_content = f'''
-packer {{
-  required_plugins {{
-    virtualbox = {{
-      version = ">= 1.0.0"
-      source  = "github.com/hashicorp/virtualbox"
-    }}
-  }}
-}}
 
-variable "template_name" {{
-  default = "{template_name}"
-}}
+def pick_base_image(os_name):
+    key = (os_name or "").strip().lower()
+    if key in BASE_IMAGE_MAP:
+        return BASE_IMAGE_MAP[key], True
+    return DEFAULT_IMAGE, False
 
-source "virtualbox-iso" "base" {{
-  vm_name          = "{template_name}"
-  iso_url          = "{iso_url}"
-  iso_checksum     = "{iso_checksum}"
-  disk_size        = 20480
-  memory           = {spec.get("ram_gb", 4) * 1024}
-  cpus             = {spec.get("cpu", 2)}
-  headless         = true
-  ssh_username     = "ubuntu"
-  ssh_password     = "ubuntu"
-  ssh_timeout      = "30m"
-  shutdown_command = "echo ubuntu | sudo -S shutdown -P now"
-  output_directory = "/tmp/packer-output/{template_name}"
-}}
 
-build {{
-  sources = ["source.virtualbox-iso.base"]
+def write_cloud_init(workdir):
+    ci_dir = workdir / "cloud-init"
+    ci_dir.mkdir(parents=True, exist_ok=True)
+    (ci_dir / "user-data").write_text(
+        "#cloud-config\n"
+        "ssh_pwauth: true\n"
+        "users:\n"
+        "  - name: packer\n"
+        "    plain_text_passwd: packer\n"
+        "    lock_passwd: false\n"
+        "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
+        "    shell: /bin/bash\n"
+        "    groups: sudo\n"
+    )
+    (ci_dir / "meta-data").write_text(
+        "instance-id: packer-build\n"
+        "local-hostname: packer-build\n"
+    )
+    return ci_dir
 
-  provisioner "shell" {{
-    inline = [
-      "sudo apt-get update -y",
-      "sudo apt-get install -y {packages_install}",
-      "sudo apt-get clean"
+
+def download_base_image(client, object_name, dest):
+    client.fget_object(BASE_BUCKET, object_name, str(dest))
+
+
+def ensure_bucket(client, bucket):
+    if not client.bucket_exists(bucket):
+        client.make_bucket(bucket)
+
+
+def run_packer_init():
+    try:
+        r = subprocess.run(
+            ["packer", "init", str(PACKER_TEMPLATE)],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(PROJECT_ROOT),
+        )
+        return r.returncode == 0, r.stdout + r.stderr
+    except Exception as e:
+        return False, "packer init error: " + str(e)
+
+
+def run_packer_build(spec, base_img, ci_dir, output_dir):
+    vm_name = spec.get("template_name", "vm-image")
+    cpu = int(spec.get("cpu", 2))
+    ram_mb = int(spec.get("ram_gb", 4)) * 1024
+    packages_json = json.dumps(spec.get("packages", []))
+    cmd = [
+        "packer", "build", "-force",
+        "-var", "vm_name=" + vm_name,
+        "-var", "cpu=" + str(cpu),
+        "-var", "ram_mb=" + str(ram_mb),
+        "-var", "base_image_path=" + str(base_img),
+        "-var", "cloud_init_dir=" + str(ci_dir),
+        "-var", "packages_json=" + packages_json,
+        "-var", "output_dir=" + str(output_dir),
+        str(PACKER_TEMPLATE),
     ]
-  }}
-}}
-'''
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    template_path = output_dir / f"{template_name}.pkr.hcl"
-    template_path.write_text(hcl_content)
-    return template_path
-
-
-def run_packer(template_path: Path) -> tuple[bool, str]:
-    """Run packer build and return (success, logs)."""
     try:
         env = os.environ.copy()
         env["PACKER_LOG"] = "1"
-
-        result = subprocess.run(
-            ["packer", "build", "-force", str(template_path)],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            env=env
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=3600,
+            cwd=str(PROJECT_ROOT), env=env,
         )
-
-        logs = result.stdout + result.stderr
-        success = result.returncode == 0
-        return success, logs
-
+        return r.returncode == 0, r.stdout + r.stderr
     except subprocess.TimeoutExpired:
         return False, "Packer build timed out after 1 hour"
     except Exception as e:
-        return False, f"Packer error: {str(e)}"
+        return False, "Packer build error: " + str(e)
 
 
-def validate_packer_template(template_path: Path) -> tuple[bool, str]:
-    """Run packer validate before building."""
-    try:
-        result = subprocess.run(
-            ["packer", "validate", str(template_path)],
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-        logs = result.stdout + result.stderr
-        return result.returncode == 0, logs
-    except Exception as e:
-        return False, f"Packer validate error: {str(e)}"
+def upload_built_image(client, output_dir, vm_name):
+    qcow2 = output_dir / (vm_name + ".qcow2")
+    if not qcow2.exists():
+        return False, "expected output not found: " + str(qcow2)
+    ensure_bucket(client, BUILT_BUCKET)
+    object_name = vm_name + ".qcow2"
+    client.fput_object(BUILT_BUCKET, object_name, str(qcow2))
+    return True, BUILT_BUCKET + "/" + object_name
 
 
-# ─── ANSIBLE ──────────────────────────────────────────────────────────────────
-
-def generate_ansible_playbook(spec: dict) -> dict:
-    """Generate Ansible roles list from a VM spec."""
-    packages = spec.get("packages", [])
-    roles = []
-
-    # Map packages to ansible roles
-    package_role_map = {
-        "docker": "docker",
-        "python3.12": "python",
-        "python3": "python",
-        "python": "python",
-        "nginx": "nginx",
-        "git": "base",
-        "curl": "base",
-        "wget": "base",
-    }
-
-    for pkg in packages:
-        role = package_role_map.get(pkg.lower())
-        if role and role not in roles:
-            roles.append(role)
-
-    if "base" not in roles:
-        roles.insert(0, "base")
-
-    return {"roles": roles, "packages": packages}
-
-
-def write_ansible_playbook(spec: dict, output_dir: Path) -> Path:
-    """Write an Ansible playbook YAML file to disk."""
-    template_name = spec.get("template_name", "base-image")
-    ansible_spec = generate_ansible_playbook(spec)
-    roles = ansible_spec["roles"]
-    packages = ansible_spec["packages"]
-
-    roles_yaml = "\n".join([f"    - {r}" for r in roles])
-    packages_yaml = "\n".join([f"    - {p}" for p in packages])
-
-    playbook_content = f"""---
-- name: Configure {template_name}
-  hosts: all
-  become: true
-  vars:
-    template_name: "{template_name}"
-    packages:
-{packages_yaml}
-
-  roles:
-{roles_yaml}
-"""
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    playbook_path = output_dir / f"{template_name}.yml"
-    playbook_path.write_text(playbook_content)
-    return playbook_path
-
-
-def run_ansible(playbook_path: Path, inventory: str = "localhost,") -> tuple[bool, str]:
-    """Run ansible-playbook and return (success, logs)."""
-    try:
-        result = subprocess.run(
-            [
-                "ansible-playbook",
-                str(playbook_path),
-                "-i", inventory,
-                "--connection=local",
-                "-v"
-            ],
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
-
-        logs = result.stdout + result.stderr
-        success = result.returncode == 0
-        return success, logs
-
-    except subprocess.TimeoutExpired:
-        return False, "Ansible timed out after 30 minutes"
-    except Exception as e:
-        return False, f"Ansible error: {str(e)}"
-
-
-# ─── FULL PIPELINE ────────────────────────────────────────────────────────────
-
-def execute_pipeline(spec: dict) -> dict:
-    """
-    Full execution pipeline:
-    1. Generate + validate Packer template
-    2. Run Packer build
-    3. Generate + run Ansible playbook
-    Returns a result dict with status and logs.
-    """
-    template_name = spec.get("template_name", "base-image")
+def execute_pipeline(spec):
+    template_name = spec.get("template_name", "vm-image")
     result = {
         "template_name": template_name,
-        "packer_validated": False,
+        "status": "failed",
         "packer_success": False,
         "ansible_success": False,
         "packer_logs": "",
         "ansible_logs": "",
-        "error": None
+        "error": None,
+        "artifact": None,
     }
-
+    workdir = Path(tempfile.mkdtemp(prefix="build-" + template_name + "-"))
     try:
-        # Step 1 — generate packer spec
-        packer_spec = generate_packer_template(spec)
-        result["packer_spec"] = packer_spec
+        client = _minio_client()
 
-        # Step 2 — write packer template
-        packer_path = write_packer_template(
-            {**spec, **packer_spec},
-            PACKER_TEMPLATES_DIR
-        )
-        logger.info(f"Packer template written: {packer_path}")
+        object_name, matched = pick_base_image(spec.get("os", ""))
+        if not matched:
+            result["packer_logs"] += (
+                "WARNING: OS '" + str(spec.get("os")) +
+                "' not in catalog; falling back to " + object_name + "\n"
+            )
+        base_img = workdir / object_name
+        try:
+            download_base_image(client, object_name, base_img)
+        except S3Error as e:
+            result["error"] = "could not fetch base image " + object_name + ": " + str(e)
+            return result
+        result["packer_logs"] += "Base image: " + BASE_BUCKET + "/" + object_name + "\n"
 
-        # Step 3 — validate packer template
-        valid, validate_logs = validate_packer_template(packer_path)
-        result["packer_validated"] = valid
-        result["packer_logs"] += f"=== VALIDATE ===\n{validate_logs}\n"
+        ci_dir = write_cloud_init(workdir)
 
-        if not valid:
-            result["error"] = "Packer template validation failed"
+        ok, init_logs = run_packer_init()
+        result["packer_logs"] += "=== INIT ===\n" + init_logs + "\n"
+        if not ok:
+            result["error"] = "packer init failed"
             return result
 
-        # Step 4 — run packer build
-        success, build_logs = run_packer(packer_path)
-        result["packer_success"] = success
-        result["packer_logs"] += f"=== BUILD ===\n{build_logs}\n"
-
-        if not success:
+        output_dir = workdir / "output"
+        ok, build_logs = run_packer_build(spec, base_img, ci_dir, output_dir)
+        result["packer_logs"] += "=== BUILD ===\n" + build_logs + "\n"
+        result["ansible_logs"] = build_logs
+        result["packer_success"] = ok
+        result["ansible_success"] = ok
+        if not ok:
             result["error"] = "Packer build failed"
             return result
 
-        # Step 5 — generate ansible roles
-        ansible_spec = generate_ansible_playbook(spec)
-        result["ansible_roles"] = ansible_spec["roles"]
-
-        # Step 6 — write ansible playbook
-        playbook_path = write_ansible_playbook(
-            spec,
-            ANSIBLE_PLAYBOOKS_DIR
-        )
-        logger.info(f"Ansible playbook written: {playbook_path}")
-
-        # Step 7 — run ansible
-        ansible_success, ansible_logs = run_ansible(playbook_path)
-        result["ansible_success"] = ansible_success
-        result["ansible_logs"] = ansible_logs
-
-        if not ansible_success:
-            result["error"] = "Ansible configuration failed"
+        ok, info = upload_built_image(client, output_dir, template_name)
+        if not ok:
+            result["error"] = "upload failed: " + info
             return result
+        result["artifact"] = info
+        result["packer_logs"] += "=== UPLOAD ===\nstored at " + info + "\n"
 
         result["status"] = "completed"
         return result
-
     except Exception as e:
         result["error"] = str(e)
-        result["status"] = "failed"
         return result
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)

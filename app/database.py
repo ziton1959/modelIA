@@ -1,15 +1,13 @@
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 
 DATABASE_URL = "postgresql+asyncpg://imagefactory:strongpassword@localhost:5432/imagefactory"
 
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=True
-)
+engine = create_async_engine(DATABASE_URL, echo=True)
 
-AsyncSessionLocal = sessionmaker(
-    bind=engine,
+AsyncSessionLocal = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
     expire_on_commit=False,
 )
 

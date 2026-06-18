@@ -4,72 +4,76 @@ packer {
       source  = "github.com/hashicorp/qemu"
       version = "~> 1"
     }
+    ansible = {
+      source  = "github.com/hashicorp/ansible"
+      version = "~> 1"
+    }
   }
 }
-
-variable "os_version" {
-  default = "22.04.3"
-}
-
 variable "vm_name" {
+  type    = string
   default = "ubuntu-base"
 }
-
 variable "cpu" {
+  type    = number
   default = 2
 }
-
 variable "ram_mb" {
+  type    = number
   default = 4096
 }
-
+variable "base_image_path" {
+  type    = string
+  default = "base.img"
+}
+variable "cloud_init_dir" {
+  type    = string
+  default = "cloud-init"
+}
+variable "packages_json" {
+  type    = string
+  default = "[]"
+}
+variable "output_dir" {
+  type    = string
+  default = "output/ubuntu-base"
+}
 variable "disk_size" {
+  type    = string
   default = "20G"
 }
-
-source "qemu" "ubuntu_base" {
-  iso_url      = "https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso"
-  iso_checksum = "sha256:9bc6028870aef3f74f4e16b900008179e78b130e6b0b9a140635434a46aa98b0"
-  output_directory = "output/${var.vm_name}"
+source "qemu" "base" {
+  iso_url          = var.base_image_path
+  iso_checksum     = "none"
+  disk_image       = true
+  use_backing_file = true
+  output_directory = var.output_dir
   vm_name          = "${var.vm_name}.qcow2"
-
-  cpus        = var.cpu
-  memory      = var.ram_mb
-  disk_size   = var.disk_size
-  format      = "qcow2"
-  accelerator = "kvm"
-
-  ssh_username     = "ubuntu"
-  ssh_password     = "ubuntu"
-  ssh_timeout      = "30m"
-  shutdown_command = "echo 'ubuntu' | sudo -S shutdown -P now"
-
-  http_directory = "packer/http"
-  boot_wait      = "5s"
-  boot_command = [
-    "<esc><esc><esc>",
-    "<enter><wait>",
-    "/casper/vmlinuz ",
-    "initrd=/casper/initrd ",
-    "autoinstall ",
-    "ds=nocloud-net;seedfrom=http://{{ .HTTPIP }}:{{ .HTTPPort }}/",
-    "<enter>"
-  ]
-
-  headless = true
+  format           = "qcow2"
+  disk_size        = var.disk_size
+  disk_interface   = "virtio"
+  net_device       = "virtio-net"
+  accelerator      = "kvm"
+  headless         = true
+  cpus             = var.cpu
+  memory           = var.ram_mb
+  cd_files         = ["${var.cloud_init_dir}/user-data", "${var.cloud_init_dir}/meta-data"]
+  cd_label         = "cidata"
+  boot_command     = []
+  boot_wait        = "5s"
+  communicator     = "ssh"
+  ssh_username     = "packer"
+  ssh_password     = "packer"
+  ssh_timeout      = "20m"
+  shutdown_command = "echo 'packer' | sudo -S shutdown -P now"
 }
-
 build {
-  sources = ["source.qemu.ubuntu_base"]
-
+  sources = ["source.qemu.base"]
   provisioner "shell" {
-    inline = [
-      "sudo apt-get update",
-      "sudo apt-get install -y python3 python3-pip"
-    ]
+    inline = ["cloud-init status --wait || true"]
   }
-
   provisioner "ansible" {
-    playbook_file = "ansible/playbooks/base.yml"
+    playbook_file   = "ansible/playbooks/base.yml"
+    extra_arguments = ["--extra-vars", "packages=${var.packages_json}"]
   }
 }
