@@ -97,7 +97,7 @@ build {
   provisioner "ansible" {
     playbook_file = "ansible/playbooks/base.yml"
     extra_arguments = [
-      "--extra-vars", "packages=${var.packages_json}"
+      "--extra-vars", "${var.packages_json == "" ? "packages=[]" : "packages=${var.packages_json}"}"
     ]
   }
 }
