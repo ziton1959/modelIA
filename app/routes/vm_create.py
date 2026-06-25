@@ -23,7 +23,7 @@ async def run_pipeline_background(job_id: int, spec: dict):
         try:
             await update_job(db, job_id, status="running", logs="Pipeline started...")
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, execute_pipeline, spec)
+            result = await loop.run_in_executor(None, execute_pipeline, spec, job_id)
             if result.get("status") == "completed":
                 logs = result.get("packer_logs", "") + result.get("ansible_logs", "")
                 await update_job(db, job_id, status="completed", logs=logs)
