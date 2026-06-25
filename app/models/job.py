@@ -13,5 +13,5 @@ class Job(Base):
     vm_id = Column(Integer, ForeignKey("vms.id"), nullable=True)
     logs = Column(Text, default="")
     phase = Column(String, default="", nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
