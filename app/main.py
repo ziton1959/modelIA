@@ -6,7 +6,7 @@ from app.routes.users import router as users_router
 from app.routes.vms import router as vms_router
 from app.routes.jobs import router as jobs_router
 from app.routes.vm_create import router as vm_create_router
-
+from app.routes import downloads
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,6 +33,7 @@ app.include_router(users_router)
 app.include_router(vms_router)
 app.include_router(jobs_router)
 app.include_router(vm_create_router)
+app.include_router(downloads.router)
 
 
 @app.get("/health")
