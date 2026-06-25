@@ -6,8 +6,6 @@ from minio.error import S3Error
 
 router = APIRouter(prefix="/api", tags=["downloads"])
 
-# MinIO endpoint the BROWSER will use (must be reachable from the browser),
-# not the internal 127.0.0.1 the executor uses.
 MINIO_PUBLIC_ENDPOINT = os.getenv("MINIO_PUBLIC_ENDPOINT", "10.202.135.233:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
@@ -24,7 +22,7 @@ def _public_client() -> Minio:
 
 
 @router.get("/downloads/{image_name}")
- def get_download_url(image_name: str):
+def get_download_url(image_name: str):
     object_name = image_name if image_name.endswith(".qcow2") else f"{image_name}.qcow2"
     client = _public_client()
     try:
@@ -34,12 +32,9 @@ def _public_client() -> Minio:
     url = client.presigned_get_object(
         BUILT_BUCKET, object_name, expires=timedelta(hours=1)
     )
-    size_mb = round((stat.size or 0) / 1024 / 1024)
     return {
         "url": url,
         "object": object_name,
-        "size_mb": size_mb,
-        "size_bytes": stat.size,
+        "size_mb": round((stat.size or 0) / 1024 / 1024),
         "expires_hours": 1,
-        "last_modified": stat.last_modified.isoformat() if stat.last_modified else None,
     }
