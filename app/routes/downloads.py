@@ -24,17 +24,22 @@ def _public_client() -> Minio:
 
 
 @router.get("/downloads/{image_name}")
-def get_download_url(image_name: str):
-    """Return a presigned URL the browser can use to download the image."""
-    # ensure it ends with .qcow2 (frontend may pass just the template name)
+ def get_download_url(image_name: str):
     object_name = image_name if image_name.endswith(".qcow2") else f"{image_name}.qcow2"
     client = _public_client()
     try:
-        # confirm it exists first, for a clean 404 instead of a broken link
-        client.stat_object(BUILT_BUCKET, object_name)
+        stat = client.stat_object(BUILT_BUCKET, object_name)
     except S3Error:
         raise HTTPException(status_code=404, detail=f"image not found: {object_name}")
     url = client.presigned_get_object(
         BUILT_BUCKET, object_name, expires=timedelta(hours=1)
     )
-    return {"url": url, "object": object_name}
+    size_mb = round((stat.size or 0) / 1024 / 1024)
+    return {
+        "url": url,
+        "object": object_name,
+        "size_mb": size_mb,
+        "size_bytes": stat.size,
+        "expires_hours": 1,
+        "last_modified": stat.last_modified.isoformat() if stat.last_modified else None,
+    }
