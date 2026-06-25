@@ -178,8 +178,7 @@ def upload_built_image(client, output_dir, vm_name):
 
 
 
-def execute_pipeline(spec):
-    """Synchronous pipeline; called via run_in_executor from the route."""
+def execute_pipeline(spec, job_id=None):
     template_name = spec.get("template_name", "vm-image")
     result = {
         "template_name": template_name,
@@ -195,6 +194,7 @@ def execute_pipeline(spec):
     try:
         client = _minio_client()
 
+        _report_phase(job_id, "fetching_base")
         object_name, matched = pick_base_image(spec.get("os", ""))
         if not matched:
             result["packer_logs"] += (
@@ -211,12 +211,14 @@ def execute_pipeline(spec):
 
         ci_dir = write_cloud_init(workdir)
 
+        _report_phase(job_id, "booting_vm")
         ok, init_logs = run_packer_init()
         result["packer_logs"] += "=== INIT ===\n" + init_logs + "\n"
         if not ok:
             result["error"] = "packer init failed"
             return result
 
+        _report_phase(job_id, "installing_packages")
         output_dir = workdir / "output"
         ok, build_logs = run_packer_build(spec, base_img, ci_dir, output_dir)
         result["packer_logs"] += "=== BUILD ===\n" + build_logs + "\n"
@@ -227,6 +229,7 @@ def execute_pipeline(spec):
             result["error"] = "Packer build failed"
             return result
 
+        _report_phase(job_id, "storing_image")
         ok, info = upload_built_image(client, output_dir, template_name)
         if not ok:
             result["error"] = "upload failed: " + info
@@ -234,6 +237,7 @@ def execute_pipeline(spec):
         result["artifact"] = info
         result["packer_logs"] += "=== UPLOAD ===\nstored at " + info + "\n"
 
+        _report_phase(job_id, "completed")
         result["status"] = "completed"
         return result
     except Exception as e:
