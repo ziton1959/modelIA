@@ -78,7 +78,7 @@ async def start_build(
     job = await get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    if job.status not in ("pending", "failed"):
+    if job.status not in ("pending", "queued", "failed"):
         return {"status": job.status, "job_id": job_id,
                 "message": "build already started or finished"}
 
