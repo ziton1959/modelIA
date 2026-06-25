@@ -13,6 +13,7 @@ class JobOut(BaseModel):
     owner_id: int
     vm_id: Optional[int]
     logs: str
+    phase: Optional[str] = None
     created_at: datetime
     finished_at: Optional[datetime]
 
