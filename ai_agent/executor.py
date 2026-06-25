@@ -43,6 +43,26 @@ BASE_IMAGE_MAP = {
 }
 DEFAULT_IMAGE = "ubuntu-22.04.img"
 
+SYNC_DB_URL = os.getenv(
+    "SYNC_DB_URL",
+    "postgresql://imagefactory:strongpassword@localhost:5432/imagefactory",
+)
+
+def _report_phase(job_id, phase):
+    """Write current build phase to the job row. Best-effort, never crashes the build."""
+    if job_id is None:
+        return
+    try:
+        import psycopg2
+        conn = psycopg2.connect(SYNC_DB_URL)
+        cur = conn.cursor()
+        cur.execute("UPDATE jobs SET phase = %s WHERE id = %s", (phase, job_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[phase report failed] {phase}: {e}")
+
 
 def _minio_client():
     return Minio(
