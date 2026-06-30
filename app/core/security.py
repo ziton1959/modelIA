@@ -1,23 +1,25 @@
 from datetime import datetime, timedelta
-from passlib.context import CryptContext
 from jose import jwt, JWTError
+import bcrypt
 import os
 
-# bcrypt is the proper password hash — salted and deliberately slow.
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# In production, set these via env vars. The secret signs the JWT — keep it secret.
 SECRET_KEY = os.getenv("JWT_SECRET", "change-this-to-a-long-random-string")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24h
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    # bcrypt has a 72-byte limit; truncate to stay safe.
+    pw = password.encode("utf-8")[:72]
+    return bcrypt.hashpw(pw, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    pw = plain.encode("utf-8")[:72]
+    try:
+        return bcrypt.checkpw(pw, hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
 def create_access_token(data: dict) -> str:
