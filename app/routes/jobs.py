@@ -1,29 +1,26 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc
 from app.core.deps import get_db
 from app.crud.job import create_job, get_job, get_all_jobs
-from app.schemas.job import JobCreate, JobOut
-from typing import List
-from app.routes.auth import get_current_user
-from sqlalchemy import select, desc
-from app.models.job import Job
 from app.crud.vm import get_vm
+from app.schemas.job import JobCreate, JobOut
+from app.models.job import Job
+from app.routes.auth import get_current_user
+from typing import List
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
-
 
 
 @router.post("/", response_model=JobOut)
 async def create(payload: JobCreate, db: AsyncSession = Depends(get_db)):
     return await create_job(db, payload.type, owner_id=1, vm_id=payload.vm_id)
 
+
 @router.get("/", response_model=List[JobOut])
 async def list_jobs(db: AsyncSession = Depends(get_db)):
     return await get_all_jobs(db)
 
-@router.get("/{job_id}", response_model=JobOut)
-async def get_one(job_id: int, db: AsyncSession = Depends(get_db)):
-    return await get_job(db, job_id)
 
 @router.get("/mine/history")
 async def my_history(
@@ -48,16 +45,15 @@ async def my_history(
         })
     return out
 
-    @router.get("/mine/history/{job_id}")
+
+@router.get("/mine/history/{job_id}")
 async def my_history_detail(
     job_id: int,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    from app.crud.job import get_job
     job = await get_job(db, job_id)
     if not job or job.owner_id != current_user.id:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="not found")
     vm = await get_vm(db, job.vm_id) if job.vm_id else None
     return {
@@ -66,3 +62,8 @@ async def my_history_detail(
         "spec": vm.config if vm else {},
         "created_at": job.created_at.isoformat() if job.created_at else None,
     }
+
+
+@router.get("/{job_id}", response_model=JobOut)
+async def get_one(job_id: int, db: AsyncSession = Depends(get_db)):
+    return await get_job(db, job_id)
