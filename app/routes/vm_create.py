@@ -11,12 +11,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 from ai_agent.orchestrator import parse_vm_request
 from ai_agent.executor import execute_pipeline
 from app.database import AsyncSessionLocal
+from app.routes.auth import get_current_user
 
 router = APIRouter(prefix="/api/vm", tags=["vm-create"])
 
 class VMRequest(BaseModel):
     prompt: str
-    owner_id: int = 1
 
 async def run_pipeline_background(job_id: int, spec: dict):
     async with AsyncSessionLocal() as db:
@@ -39,9 +39,9 @@ async def run_pipeline_background(job_id: int, spec: dict):
 @router.post("/create")
 async def create_vm_from_prompt(
     payload: VMRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    # Parse the prompt and create records, but DO NOT build yet.
     spec = await parse_vm_request(payload.prompt)
     if "error" in spec:
         return {"status": "failed", "error": spec["error"]}
@@ -51,22 +51,15 @@ async def create_vm_from_prompt(
         name=spec["template_name"],
         template=spec["template_name"],
         config=spec,
-        owner_id=payload.owner_id
+        owner_id=current_user.id,      # ← was payload.owner_id
     )
     job = await create_job(
         db,
         type="vm.provision",
-        owner_id=payload.owner_id,
-        vm_id=vm.id
+        owner_id=current_user.id,      # ← was payload.owner_id
+        vm_id=vm.id,
     )
-
-    # status stays "pending" — build only starts when /build is called.
-    return {
-        "status": "pending",
-        "job_id": job.id,
-        "vm_id": vm.id,
-        "spec": spec
-    }
+    return {"status": "pending", "job_id": job.id, "vm_id": vm.id, "spec": spec}
 
 @router.post("/build/{job_id}")
 async def start_build(
