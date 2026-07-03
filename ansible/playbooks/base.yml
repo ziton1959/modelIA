@@ -10,51 +10,84 @@
   vars:
     packages: []
 
+    # Per-OS-family package name translations.
     package_name_map:
-      docker: docker.io
-      python: python3
-      python3: python3
-      "python3.12": python3
-      pip: python3-pip
-      node: nodejs
-      nodejs: nodejs
+      Debian:
+        docker: docker.io
+        python: python3
+        python3: python3
+        pip: python3-pip
+        node: nodejs
+        nodejs: nodejs
+      RedHat:
+        docker: docker
+        python: python3
+        python3: python3
+        pip: python3-pip
+        node: nodejs
+        nodejs: nodejs
 
   tasks:
-    - name: Configure apt to use corporate proxy
+    # ---- Proxy config (per family) ----
+    - name: Configure apt proxy (Debian/Ubuntu)
       copy:
         dest: /etc/apt/apt.conf.d/00proxy
         content: |
           Acquire::http::Proxy "http://10.93.144.53:8080";
           Acquire::https::Proxy "http://10.93.144.53:8080";
-    
-    - name: Update apt cache
+      when: ansible_os_family == "Debian"
+
+    - name: Configure dnf proxy (RedHat/Rocky)
+      lineinfile:
+        path: /etc/dnf/dnf.conf
+        line: "proxy=http://10.93.144.53:8080"
+        create: yes
+      when: ansible_os_family == "RedHat"
+
+    # ---- Translate package names for the detected OS ----
+    - name: Translate requested packages to real names
+      set_fact:
+        final_packages: "{{ final_packages | default([]) + [ package_name_map[ansible_os_family][item | lower] | default(item) ] }}"
+      loop: "{{ packages }}"
+
+    # ---- Debian/Ubuntu path (apt) ----
+    - name: Update apt cache (Debian)
       apt:
         update_cache: yes
         cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
 
-    - name: Install base packages
+    - name: Install base packages (Debian)
       apt:
-        name:
-          - curl
-          - wget
-          - git
-          - unzip
-          - htop
-          - vim
+        name: [curl, wget, git, unzip, vim]
         state: present
+      when: ansible_os_family == "Debian"
 
-    - name: Translate requested packages to real apt names
-      set_fact:
-        final_packages: "{{ final_packages | default([]) + [ package_name_map[item | lower] | default(item) ] }}"
-      loop: "{{ packages }}"
-
-    - name: Install requested packages
+    - name: Install requested packages (Debian)
       apt:
         name: "{{ final_packages }}"
         state: present
-      when: final_packages | default([]) | length > 0
+      when: ansible_os_family == "Debian" and final_packages | default([]) | length > 0
 
-    - name: Clean apt cache
+    - name: Clean apt cache (Debian)
       apt:
         autoclean: yes
         autoremove: yes
+      when: ansible_os_family == "Debian"
+
+    # ---- Rocky/RHEL path (dnf) ----
+    - name: Install base packages (RedHat)
+      dnf:
+        name: [curl, wget, git, unzip, vim]
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install requested packages (RedHat)
+      dnf:
+        name: "{{ final_packages }}"
+        state: present
+      when: ansible_os_family == "RedHat" and final_packages | default([]) | length > 0
+
+    - name: Clean dnf cache (RedHat)
+      command: dnf clean all
+      when: ansible_os_family == "RedHat"
