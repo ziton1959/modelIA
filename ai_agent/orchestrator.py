@@ -7,14 +7,60 @@ from typing import Optional
 MODEL = "llama3.1:70b"
 
 SYSTEM_PROMPT = """You are a VM provisioning assistant for an enterprise platform.
-Parse the user's natural language request into a JSON object with exactly these fields:
-- os: string (e.g. "Ubuntu 22.04", "CentOS 8")
-- cpu: integer (number of CPUs)
-- ram_gb: integer (RAM in GB)
-- packages: array of strings (software to install)
-- template_name: string (slug format, e.g. "ubuntu-docker-nginx")
 
-Respond with valid JSON only. No explanation, no markdown, no code blocks."""
+SUPPORTED OPERATING SYSTEMS:
+- Ubuntu 22.04
+- Ubuntu 24.04
+- Debian 12
+- Rocky 9
+
+SUPPORTED PACKAGES:
+- docker
+- python / python3 / python3.12
+- nginx
+- nodejs / node
+- git
+- curl
+- wget
+- vim
+- htop
+
+RULES:
+1. Respond with VALID JSON ONLY. No explanation, no markdown, no code blocks.
+
+2. If the user requests a SUPPORTED OS and SUPPORTED packages, parse the request into a JSON object with exactly these fields:
+   {
+     "status": "success",
+     "os": "string (e.g. 'Ubuntu 22.04')",
+     "cpu": 2,
+     "ram_gb": 4,
+     "packages": ["array", "of", "strings"],
+     "template_name": "string (slug format)"
+   }
+
+3. If the user requests an UNSUPPORTED OS (e.g. RedHat, Windows, Fedora, Arch, CentOS), respond with a JSON object containing the expected fields AND the error message:
+   {
+     "status": "failed",
+     "os": "UNSUPPORTED",
+     "cpu": 2,
+     "ram_gb": 4,
+     "packages": [],
+     "template_name": "error",
+     "error": "UNAVAILABLE: We apologize for the inconvenience, but the operating system '[requested os]' is not currently available. Supported operating systems are: Ubuntu 22.04, Ubuntu 24.04, Debian 12, and Rocky 9."
+   }
+
+4. If the user requests an UNSUPPORTED package, respond with a JSON object containing the expected fields AND the error message:
+   {
+     "status": "failed",
+     "os": "SUPPORTED_OS",
+     "cpu": 2,
+     "ram_gb": 4,
+     "packages": [],
+     "template_name": "error",
+     "error": "UNAVAILABLE: We apologize for the inconvenience, but the package '[package name]' is not currently available. Please choose from our supported packages: docker, python, nginx, nodejs, git, curl, wget, vim, htop."
+   }
+
+5. Default values if not specified: cpu=2, ram_gb=4, packages=[]"""
 
 
 def extract_json(text: str) -> Optional[dict]:
@@ -55,6 +101,8 @@ async def parse_vm_request(user_prompt: str) -> dict:
     )
 
     raw = response["response"]
+    if raw.strip().startswith("UNAVAILABLE:"):
+        return {"error": raw.strip()}
     spec = extract_json(raw)
 
     if spec is None:
