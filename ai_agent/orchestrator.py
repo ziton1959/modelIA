@@ -3,7 +3,6 @@ import json
 import re
 from typing import Optional
 
-
 MODEL = "llama3.1:70b"
 
 SYSTEM_PROMPT = """You are a VM provisioning assistant for an enterprise platform.
@@ -15,52 +14,58 @@ SUPPORTED OPERATING SYSTEMS:
 - Rocky 9
 
 SUPPORTED PACKAGES:
-- docker
-- python / python3 / python3.12
-- nginx
-- nodejs / node
-- git
-- curl
-- wget
-- vim
-- htop
+- docker, python, nginx, nodejs, git, curl, wget, vim, htop
 
 RULES:
 1. Respond with VALID JSON ONLY. No explanation, no markdown, no code blocks.
-
-2. If the user requests a SUPPORTED OS and SUPPORTED packages, parse the request into a JSON object with exactly these fields:
+2. Parse the request into a JSON object with exactly these fields:
    {
      "status": "success",
-     "os": "string (e.g. 'Ubuntu 22.04')",
-     "cpu": 2,
-     "ram_gb": 4,
-     "packages": ["array", "of", "strings"],
-     "template_name": "string (slug format)"
+     "os": "string or null if the user did NOT specify an OS",
+     "cpu": integer or null if NOT specified,
+     "ram_gb": integer or null if NOT specified,
+     "packages": ["array of package names the user asked for"],
+     "mentioned": ["list of which fields the user EXPLICITLY specified, e.g. ['os','packages']"]
    }
+3. IMPORTANT: Do NOT invent defaults. If the user did not say an OS, set "os": null. If they did not give CPU, set "cpu": null. If no RAM, "ram_gb": null. Only fill fields the user actually mentioned. Put every field the user explicitly gave into "mentioned".
+4. If the user requests an UNSUPPORTED OS (Windows, Fedora, Arch, CentOS, RedHat), respond:
+   {"status": "failed", "error": "UNAVAILABLE: The operating system is not supported. Supported: Ubuntu 22.04, Ubuntu 24.04, Debian 12, Rocky 9."}
+"""
 
-3. If the user requests an UNSUPPORTED OS (e.g. RedHat, Windows, Fedora, Arch, CentOS), respond with a JSON object containing the expected fields AND the error message:
-   {
-     "status": "failed",
-     "os": "UNSUPPORTED",
-     "cpu": 2,
-     "ram_gb": 4,
-     "packages": [],
-     "template_name": "error",
-     "error": "UNAVAILABLE: We apologize for the inconvenience, but the operating system '[requested os]' is not currently available. Supported operating systems are: Ubuntu 22.04, Ubuntu 24.04, Debian 12, and Rocky 9."
-   }
+# Packages that need special handling (third-party repos or ambiguous scope).
+SPECIAL_PACKAGES = {
+    "terraform": {
+        "question": "Terraform isn't in the default repos — it needs HashiCorp's official repository. How should I handle it?",
+        "options": [
+            {"label": "Set up the official repo", "value": "terraform"},
+            {"label": "Skip terraform", "value": None},
+        ],
+    },
+    "kubernetes": {
+        "question": "'Kubernetes' can mean different things. What do you need?",
+        "options": [
+            {"label": "Just kubectl (CLI)", "value": "kubectl"},
+            {"label": "Skip for now", "value": None},
+        ],
+    },
+    "docker-ce": {
+        "question": "Docker CE needs Docker's official repo. Or use the simpler docker.io from Ubuntu?",
+        "options": [
+            {"label": "Use docker.io (simple)", "value": "docker"},
+            {"label": "Skip", "value": None},
+        ],
+    },
+}
 
-4. If the user requests an UNSUPPORTED package, respond with a JSON object containing the expected fields AND the error message:
-   {
-     "status": "failed",
-     "os": "SUPPORTED_OS",
-     "cpu": 2,
-     "ram_gb": 4,
-     "packages": [],
-     "template_name": "error",
-     "error": "UNAVAILABLE: We apologize for the inconvenience, but the package '[package name]' is not currently available. Please choose from our supported packages: docker, python, nginx, nodejs, git, curl, wget, vim, htop."
-   }
+# Suggested companion packages.
+SUGGESTIONS = {
+    "docker": "docker-compose",
+    "python": "python3-pip",
+    "nginx": "certbot",
+    "nodejs": "npm",
+}
 
-5. Default values if not specified: cpu=2, ram_gb=4, packages=[]"""
+SUPPORTED_OS = ["Ubuntu 22.04", "Ubuntu 24.04", "Debian 12", "Rocky 9"]
 
 
 def extract_json(text: str) -> Optional[dict]:
@@ -77,44 +82,86 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
-def validate_spec(spec: dict) -> tuple[bool, str]:
-    required = ["os", "cpu", "ram_gb", "packages", "template_name"]
-    for field in required:
-        if field not in spec:
-            return False, f"missing field: {field}"
-    if not isinstance(spec["cpu"], int) or spec["cpu"] < 1:
-        return False, "cpu must be a positive integer"
-    if not isinstance(spec["ram_gb"], int) or spec["ram_gb"] < 1:
-        return False, "ram_gb must be a positive integer"
-    if not isinstance(spec["packages"], list):
-        return False, "packages must be an array"
-    return True, "ok"
+def check_missing(spec: dict) -> list:
+    """Return a list of questions for anything missing, ambiguous, or worth suggesting."""
+    questions = []
+
+    # --- Missing OS ---
+    if not spec.get("os") or spec.get("os") == "null":
+        questions.append({
+            "field": "os", "type": "choice",
+            "question": "Which operating system would you like?",
+            "options": [{"label": os, "value": os} for os in SUPPORTED_OS],
+        })
+
+    # --- Missing CPU ---
+    if not spec.get("cpu"):
+        questions.append({
+            "field": "cpu", "type": "choice",
+            "question": "How many CPU cores?",
+            "options": [{"label": "1 core", "value": 1},
+                        {"label": "2 cores", "value": 2},
+                        {"label": "4 cores", "value": 4}],
+        })
+
+    # --- Missing RAM ---
+    if not spec.get("ram_gb"):
+        questions.append({
+            "field": "ram_gb", "type": "choice",
+            "question": "How much RAM?",
+            "options": [{"label": "2 GB", "value": 2},
+                        {"label": "4 GB", "value": 4},
+                        {"label": "8 GB", "value": 8}],
+        })
+
+    # --- Special / ambiguous packages ---
+    for pkg in spec.get("packages", []):
+        if pkg.lower() in SPECIAL_PACKAGES:
+            sp = SPECIAL_PACKAGES[pkg.lower()]
+            questions.append({
+                "field": f"pkg_{pkg.lower()}", "type": "package_clarify",
+                "package": pkg.lower(),
+                "question": sp["question"],
+                "options": sp["options"],
+            })
+
+    # --- Suggestions (only if no other questions pending, to avoid overload) ---
+    if not questions:
+        for pkg in spec.get("packages", []):
+            sug = SUGGESTIONS.get(pkg.lower())
+            if sug and sug not in [p.lower() for p in spec.get("packages", [])]:
+                questions.append({
+                    "field": "packages_extra", "type": "suggest",
+                    "question": f"You added {pkg}. Would you like {sug} too?",
+                    "options": [{"label": f"Yes, add {sug}", "value": sug},
+                                {"label": "No thanks", "value": None}],
+                })
+                break  # one suggestion at a time
+
+    return questions
+
+
+def finalize_spec(spec: dict) -> dict:
+    """Apply template_name once the spec is complete."""
+    if not spec.get("template_name"):
+        packages_slug = "-".join(p.lower() for p in spec.get("packages", []))
+        os_slug = spec["os"].lower().replace(" ", "-").replace(".", "")
+        spec["template_name"] = f"{os_slug}-{packages_slug}" if packages_slug else os_slug
+    return spec
 
 
 async def parse_vm_request(user_prompt: str) -> dict:
     client = ollama.AsyncClient(host="http://127.0.0.1:11434")
-
     response = await client.generate(
         model=MODEL,
         prompt=f"{SYSTEM_PROMPT}\n\nUser request: {user_prompt}",
-        stream=False
+        stream=False,
+        format="json",
     )
-
     raw = response["response"]
-    if raw.strip().startswith("UNAVAILABLE:"):
-        return {"error": raw.strip()}
     spec = extract_json(raw)
-
     if spec is None:
         return {"error": "failed to parse LLM response", "raw": raw}
-
-    valid, reason = validate_spec(spec)
-    if not valid:
-        return {"error": f"invalid spec: {reason}", "raw": raw}
-
-    if not spec.get("template_name"):
-        packages_slug = "-".join(p.lower() for p in spec["packages"])
-        os_slug = spec["os"].lower().replace(" ", "-").replace(".", "")
-        spec["template_name"] = f"{os_slug}-{packages_slug}"
-
+    if spec.get("status") == "failed":
+        return {"error": spec.get("error", "unsupported request")}
     return spec
