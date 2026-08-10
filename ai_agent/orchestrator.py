@@ -25,17 +25,16 @@ RULES:
      "cpu": integer or null if NOT specified,
      "ram_gb": integer or null if NOT specified,
      "packages": ["array of package names the user asked for"],
-     "mentioned": ["list of which fields the user EXPLICITLY specified, e.g. ['os','packages']"]
+     "mentioned": ["list of which fields the user EXPLICITLY specified"]
    }
-3. IMPORTANT: Do NOT invent defaults. If the user did not say an OS, set "os": null. If they did not give CPU, set "cpu": null. If no RAM, "ram_gb": null. Only fill fields the user actually mentioned. Put every field the user explicitly gave into "mentioned".
+3. IMPORTANT: Do NOT invent defaults. If the user did not say an OS, set "os": null. If no CPU, "cpu": null. If no RAM, "ram_gb": null. Only fill fields the user actually mentioned.
 4. If the user requests an UNSUPPORTED OS (Windows, Fedora, Arch, CentOS, RedHat), respond:
    {"status": "failed", "error": "UNAVAILABLE: The operating system is not supported. Supported: Ubuntu 22.04, Ubuntu 24.04, Debian 12, Rocky 9."}
 """
 
-# Packages that need special handling (third-party repos or ambiguous scope).
 SPECIAL_PACKAGES = {
     "terraform": {
-        "question": "Terraform isn't in the default repos — it needs HashiCorp's official repository. How should I handle it?",
+        "question": "Terraform isn't in the default repos - it needs HashiCorp's official repository. How should I handle it?",
         "options": [
             {"label": "Set up the official repo", "value": "terraform"},
             {"label": "Skip terraform", "value": None},
@@ -48,16 +47,8 @@ SPECIAL_PACKAGES = {
             {"label": "Skip for now", "value": None},
         ],
     },
-    "docker-ce": {
-        "question": "Docker CE needs Docker's official repo. Or use the simpler docker.io from Ubuntu?",
-        "options": [
-            {"label": "Use docker.io (simple)", "value": "docker"},
-            {"label": "Skip", "value": None},
-        ],
-    },
 }
 
-# Suggested companion packages.
 SUGGESTIONS = {
     "docker": "docker-compose",
     "python": "python3-pip",
@@ -68,7 +59,7 @@ SUGGESTIONS = {
 SUPPORTED_OS = ["Ubuntu 22.04", "Ubuntu 24.04", "Debian 12", "Rocky 9"]
 
 
-def extract_json(text: str) -> Optional[dict]:
+def extract_json(text):
     text = re.sub(r"```json|```", "", text).strip()
     try:
         return json.loads(text)
@@ -82,11 +73,9 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
-def check_missing(spec: dict) -> list:
-    """Return a list of questions for anything missing, ambiguous, or worth suggesting."""
+def check_missing(spec):
     questions = []
 
-    # --- Missing OS ---
     if not spec.get("os") or spec.get("os") == "null":
         questions.append({
             "field": "os", "type": "choice",
@@ -94,7 +83,6 @@ def check_missing(spec: dict) -> list:
             "options": [{"label": os, "value": os} for os in SUPPORTED_OS],
         })
 
-    # --- Missing CPU ---
     if not spec.get("cpu"):
         questions.append({
             "field": "cpu", "type": "choice",
@@ -104,7 +92,6 @@ def check_missing(spec: dict) -> list:
                         {"label": "4 cores", "value": 4}],
         })
 
-    # --- Missing RAM ---
     if not spec.get("ram_gb"):
         questions.append({
             "field": "ram_gb", "type": "choice",
@@ -114,54 +101,46 @@ def check_missing(spec: dict) -> list:
                         {"label": "8 GB", "value": 8}],
         })
 
-    # --- Special / ambiguous packages ---
     for pkg in spec.get("packages", []):
-        if pkg.lower() in SPECIAL_PACKAGES:
-            sp = SPECIAL_PACKAGES[pkg.lower()]
+        if str(pkg).lower() in SPECIAL_PACKAGES:
+            sp = SPECIAL_PACKAGES[str(pkg).lower()]
             questions.append({
-                "field": f"pkg_{pkg.lower()}", "type": "package_clarify",
-                "package": pkg.lower(),
+                "field": "pkg_" + str(pkg).lower(), "type": "package_clarify",
+                "package": str(pkg).lower(),
                 "question": sp["question"],
                 "options": sp["options"],
             })
 
-    # --- Suggestions (only if no other questions pending, to avoid overload) ---
     if not questions:
+        existing = [str(p).lower() for p in spec.get("packages", [])]
         for pkg in spec.get("packages", []):
-            sug = SUGGESTIONS.get(pkg.lower())
-            if sug and sug not in [p.lower() for p in spec.get("packages", [])]:
+            sug = SUGGESTIONS.get(str(pkg).lower())
+            if sug and sug not in existing:
                 questions.append({
                     "field": "packages_extra", "type": "suggest",
-                    "question": f"You added {pkg}. Would you like {sug} too?",
-                    "options": [{"label": f"Yes, add {sug}", "value": sug},
+                    "question": "You added " + str(pkg) + ". Would you like " + sug + " too?",
+                    "options": [{"label": "Yes, add " + sug, "value": sug},
                                 {"label": "No thanks", "value": None}],
                 })
-                break  # one suggestion at a time
+                break
 
     return questions
 
 
-def finalize_spec(spec: dict) -> dict:
-    """Apply template_name once the spec is complete."""
+def finalize_spec(spec):
     if not spec.get("template_name"):
-        packages_slug = "-".join(p.lower() for p in spec.get("packages", []))
+        packages_slug = "-".join(str(p).lower() for p in spec.get("packages", []))
         os_slug = spec["os"].lower().replace(" ", "-").replace(".", "")
-        spec["template_name"] = f"{os_slug}-{packages_slug}" if packages_slug else os_slug
+        spec["template_name"] = os_slug + "-" + packages_slug if packages_slug else os_slug
     return spec
 
 
-async def parse_vm_request(user_prompt: str) -> dict:
+async def parse_vm_request(user_prompt):
     client = ollama.AsyncClient(host="http://127.0.0.1:11434")
     response = await client.generate(
         model=MODEL,
-        prompt=f"{SYSTEM_PROMPT}\n\nUser request: {user_prompt}",
+        prompt=SYSTEM_PROMPT + "\n\nUser request: " + user_prompt,
         stream=False,
         format="json",
     )
     raw = response["response"]
-    spec = extract_json(raw)
-    if spec is None:
-        return {"error": "failed to parse LLM response", "raw": raw}
-    if spec.get("status") == "failed":
-        return {"error": spec.get("error", "unsupported request")}
-    return spec
