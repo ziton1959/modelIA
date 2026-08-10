@@ -144,3 +144,9 @@ async def parse_vm_request(user_prompt):
         format="json",
     )
     raw = response["response"]
+    spec = extract_json(raw)
+    if spec is None:
+        return {"error": "failed to parse LLM response", "raw": raw}
+    if spec.get("status") == "failed":
+        return {"error": spec.get("error", "unsupported request")}
+    return spec
