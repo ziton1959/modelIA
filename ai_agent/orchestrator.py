@@ -111,7 +111,7 @@ def check_missing(spec):
                 "options": sp["options"],
             })
 
-    if not questions:
+    if not questions and not spec.get("_suggested"):
         existing = [str(p).lower() for p in spec.get("packages", [])]
         for pkg in spec.get("packages", []):
             sug = SUGGESTIONS.get(str(pkg).lower())
