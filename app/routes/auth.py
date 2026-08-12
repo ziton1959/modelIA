@@ -44,8 +44,13 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="user not found")
     return user
+async def require_admin(current_user=Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="admin access required")
+    return current_user
 
 
 @router.get("/me", response_model=UserOut)
 async def me(current_user=Depends(get_current_user)):
     return current_user
+
