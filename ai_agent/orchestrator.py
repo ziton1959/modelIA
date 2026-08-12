@@ -3,7 +3,7 @@ import json
 import re
 from typing import Optional
 
-MODEL = "llama3.1:70b"
+MODEL = "llama3.1:8b"
 
 SYSTEM_PROMPT = """You are a VM provisioning assistant for an enterprise platform.
 
