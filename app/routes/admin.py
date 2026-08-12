@@ -7,7 +7,9 @@ from app.models.job import Job
 from app.models.vm import VM
 from app.models.user import User
 from app.crud.user import get_user, delete_user
-
+from ai_agent.executor import _minio_client, BUILT_BUCKET
+import socket
+import httpx
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
@@ -96,3 +98,61 @@ async def remove_user(
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
     return {"deleted": user_id}
+
+
+@router.get("/storage")
+async def storage_overview(admin=Depends(require_admin)):
+    client = _minio_client()
+    objects = list(client.list_objects(BUILT_BUCKET))
+    total_bytes = 0
+    images = []
+    for obj in objects:
+        size = obj.size or 0
+        total_bytes += size
+        images.append({
+            "name": obj.object_name,
+            "size_mb": round(size / 1024 / 1024),
+            "last_modified": obj.last_modified.isoformat() if obj.last_modified else None,
+        })
+    images.sort(key=lambda x: x["size_mb"], reverse=True)
+    return {
+        "image_count": len(images),
+        "total_gb": round(total_bytes / 1024 / 1024 / 1024, 2),
+        "images": images,
+    }
+
+@router.delete("/images/{image_name}")
+async def delete_image(image_name: str, admin=Depends(require_admin)):
+    object_name = image_name if image_name.endswith(".qcow2") else f"{image_name}.qcow2"
+    client = _minio_client()
+    try:
+        client.remove_object(BUILT_BUCKET, object_name)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"could not delete: {e}")
+    return {"deleted": object_name}
+def _check_tcp(host, port, timeout=2):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+@router.get("/health")
+async def system_health(admin=Depends(require_admin)):
+    services = {}
+    # PostgreSQL
+    services["postgres"] = _check_tcp("localhost", 5432)
+    # Redis
+    services["redis"] = _check_tcp("localhost", 6379)
+    # MinIO
+    services["minio"] = _check_tcp("127.0.0.1", 9000)
+    # Ollama
+    ollama_up = False
+    try:
+        async with httpx.AsyncClient(timeout=3) as c:
+            r = await c.get("http://127.0.0.1:11434/api/tags")
+            ollama_up = r.status_code == 200
+    except Exception:
+        ollama_up = False
+    services["ollama"] = ollama_up
+    return {"services": services, "all_healthy": all(services.values())}
