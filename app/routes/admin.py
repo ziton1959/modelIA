@@ -10,6 +10,9 @@ from app.crud.user import get_user, delete_user
 from ai_agent.executor import _minio_client, BUILT_BUCKET
 import socket
 import httpx
+from datetime import datetime, timedelta
+from collections import Counter
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
@@ -156,3 +159,66 @@ async def system_health(admin=Depends(require_admin)):
         ollama_up = False
     services["ollama"] = ollama_up
     return {"services": services, "all_healthy": all(services.values())}
+
+@router.get("/stats/overview")
+async def stats_overview(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    # all jobs
+    result = await db.execute(select(Job))
+    jobs = result.scalars().all()
+
+    total_builds = len(jobs)
+    completed = sum(1 for j in jobs if j.status == "completed")
+    failed = sum(1 for j in jobs if j.status == "failed")
+    finished = completed + failed
+    success_rate = round((completed / finished) * 100) if finished else 0
+
+    # users count
+    ucount = await db.execute(select(func.count(User.id)))
+    total_users = ucount.scalar() or 0
+
+    # storage
+    try:
+        from ai_agent.executor import _minio_client, BUILT_BUCKET
+        client = _minio_client()
+        total_bytes = sum((o.size or 0) for o in client.list_objects(BUILT_BUCKET))
+        storage_gb = round(total_bytes / 1024 / 1024 / 1024, 2)
+    except Exception:
+        storage_gb = 0
+
+    # builds per day (last 14 days)
+    today = datetime.utcnow().date()
+    days = [(today - timedelta(days=i)) for i in range(13, -1, -1)]
+    per_day = {d.isoformat(): 0 for d in days}
+    for j in jobs:
+        if j.created_at:
+            key = j.created_at.date().isoformat()
+            if key in per_day:
+                per_day[key] += 1
+    builds_per_day = [{"date": d[5:], "count": c} for d, c in per_day.items()]  # d[5:] = MM-DD
+
+    # status breakdown
+    status_counter = Counter(j.status for j in jobs)
+    status_breakdown = [{"status": s, "count": c} for s, c in status_counter.items()]
+
+    # builds by OS (from VM config)
+    os_counter = Counter()
+    for j in jobs:
+        if j.vm_id:
+            r = await db.execute(select(VM).where(VM.id == j.vm_id))
+            vm = r.scalar_one_or_none()
+            if vm and vm.config:
+                os_name = (vm.config.get("os") or "unknown")
+                # normalize (e.g. "Ubuntu 22.04" -> "Ubuntu")
+                short = os_name.split()[0] if os_name != "unknown" else "unknown"
+                os_counter[short] += 1
+    builds_by_os = [{"os": o, "count": c} for o, c in os_counter.items()]
+
+    return {
+        "total_builds": total_builds,
+        "success_rate": success_rate,
+        "total_users": total_users,
+        "storage_gb": storage_gb,
+        "builds_per_day": builds_per_day,
+        "status_breakdown": status_breakdown,
+        "builds_by_os": builds_by_os,
+    }
