@@ -267,13 +267,14 @@ async def search_builds(
             if q.lower() not in hay:
                 continue
         out.append(row)
-    out.sort(
+        out.sort(
         key=lambda r: r["created_at"] or "",
         reverse=(sort != "oldest"),
     )
     return out
 
-    @router.delete("/builds/{job_id}")
+
+@router.delete("/builds/{job_id}")
 async def admin_delete_build(
     job_id: int,
     db: AsyncSession = Depends(get_db),
