@@ -12,6 +12,8 @@ import socket
 import httpx
 from datetime import datetime, timedelta
 from collections import Counter
+from fastapi import Query
+from typing import Optional
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -222,3 +224,45 @@ async def stats_overview(db: AsyncSession = Depends(get_db), admin=Depends(requi
         "status_breakdown": status_breakdown,
         "builds_by_os": builds_by_os,
     }
+
+@router.get("/builds/search")
+async def search_builds(
+    status: Optional[str] = Query(None),
+    os: Optional[str] = Query(None),
+    user: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    result = await db.execute(select(Job).order_by(desc(Job.created_at)))
+    jobs = result.scalars().all()
+    out = []
+    for j in jobs:
+        owner = await get_user(db, j.owner_id) if j.owner_id else None
+        vm = None
+        if j.vm_id:
+            r = await db.execute(select(VM).where(VM.id == j.vm_id))
+            vm = r.scalar_one_or_none()
+        spec = (vm.config if vm else {}) or {}
+        row = {
+            "job_id": j.id,
+            "owner": owner.username if owner else "unknown",
+            "status": j.status,
+            "template_name": spec.get("template_name", "—"),
+            "os": spec.get("os"),
+            "packages": spec.get("packages", []),
+            "created_at": j.created_at.isoformat() if j.created_at else None,
+        }
+        # apply filters
+        if status and row["status"] != status:
+            continue
+        if os and (not row["os"] or os.lower() not in row["os"].lower()):
+            continue
+        if user and (not row["owner"] or user.lower() not in row["owner"].lower()):
+            continue
+        if q:
+            hay = f"{row['template_name']} {row['owner']} {row['os']} {' '.join(row['packages'])}".lower()
+            if q.lower() not in hay:
+                continue
+        out.append(row)
+    return out
