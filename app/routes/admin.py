@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from collections import Counter
 from fastapi import Query
 from typing import Optional
+from app.crud.job import get_job
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -231,6 +232,7 @@ async def search_builds(
     os: Optional[str] = Query(None),
     user: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
+    sort: Optional[str] = Query("newest"),   # newest | oldest
     db: AsyncSession = Depends(get_db),
     admin=Depends(require_admin),
 ):
@@ -265,4 +267,21 @@ async def search_builds(
             if q.lower() not in hay:
                 continue
         out.append(row)
+    out.sort(
+        key=lambda r: r["created_at"] or "",
+        reverse=(sort != "oldest"),
+    )
     return out
+
+    @router.delete("/builds/{job_id}")
+async def admin_delete_build(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    job = await get_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="build not found")
+    await db.delete(job)
+    await db.commit()
+    return {"deleted": job_id}
