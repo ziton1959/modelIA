@@ -131,17 +131,17 @@ async def storage_overview(admin=Depends(require_admin)):
 async def delete_image(image_name: str, admin=Depends(require_admin)):
     object_name = image_name if image_name.endswith(".qcow2") else f"{image_name}.qcow2"
     client = _minio_client()
+    # verify it exists first
+    try:
+        client.stat_object(BUILT_BUCKET, object_name)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"image not found: {object_name}")
+    # now delete
     try:
         client.remove_object(BUILT_BUCKET, object_name)
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"could not delete: {e}")
+        raise HTTPException(status_code=500, detail=f"could not delete: {e}")
     return {"deleted": object_name}
-def _check_tcp(host, port, timeout=2):
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except Exception:
-        return False
 
 @router.get("/health")
 async def system_health(admin=Depends(require_admin)):
