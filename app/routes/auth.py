@@ -28,6 +28,8 @@ async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)):
     user = await get_user_by_username(db, payload.username)
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="invalid username or password")
+    if not getattr(user, "is_active", True):
+        raise HTTPException(status_code=403, detail="account is archived")
     token = create_access_token({"sub": str(user.id)})
     return {"access_token": token, "token_type": "bearer", "user": user}
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime , Boolean
 from datetime import datetime
 from app.database import Base
 
@@ -12,3 +12,4 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     role = Column(String, default="user")
     created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)

@@ -66,13 +66,14 @@ async def list_users(
         cnt = await db.execute(select(func.count(Job.id)).where(Job.owner_id == u.id))
         build_count = cnt.scalar() or 0
         out.append({
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "role": u.role,
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-            "build_count": build_count,
-        })
+          "id": u.id,
+          "username": u.username,
+          "email": u.email,
+          "role": u.role,
+          "created_at": u.created_at.isoformat() if u.created_at else None,
+          "build_count": build_count,
+          "is_active": getattr(u, "is_active", True),   # ← add this
+           })
     return out
 
 
@@ -94,18 +95,21 @@ async def change_role(
     return {"id": user_id, "role": new_role}
 
 
-@router.delete("/users/{user_id}")
-async def remove_user(
+@router.patch("/users/{user_id}/archive")
+async def archive_user(
     user_id: int,
+    payload: dict,
     db: AsyncSession = Depends(get_db),
     admin=Depends(require_admin),
 ):
     if user_id == admin.id:
-        raise HTTPException(status_code=400, detail="cannot delete yourself")
-    user = await delete_user(db, user_id)
+        raise HTTPException(status_code=400, detail="cannot archive yourself")
+    user = await get_user(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
-    return {"deleted": user_id}
+    user.is_active = payload.get("is_active", False)
+    await db.commit()
+    return {"id": user_id, "is_active": user.is_active}
 
 
 @router.get("/storage")
