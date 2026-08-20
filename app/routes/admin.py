@@ -15,6 +15,8 @@ from collections import Counter
 from fastapi import Query
 from typing import Optional
 from app.crud.job import get_job
+from app.schemas.user import UserOut
+from pydantic import BaseModel, EmailStr
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -286,3 +288,27 @@ async def admin_delete_build(
     await db.delete(job)
     await db.commit()
     return {"deleted": job_id}
+
+from app.schemas.user import UserOut
+from pydantic import BaseModel, EmailStr
+
+class AdminUserCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    role: str = "user"
+
+@router.post("/users")
+async def admin_create_user(
+    payload: AdminUserCreate,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    from app.crud.user import get_user_by_username, get_user_by_email, create_user
+    if await get_user_by_username(db, payload.username.strip()):
+        raise HTTPException(status_code=400, detail="username already taken")
+    if await get_user_by_email(db, payload.email):
+        raise HTTPException(status_code=400, detail="email already registered")
+    role = payload.role if payload.role in ("user", "admin") else "user"
+    user = await create_user(db, payload.username.strip(), payload.email, payload.password, role)
+    return {"id": user.id, "username": user.username, "email": user.email, "role": user.role}
