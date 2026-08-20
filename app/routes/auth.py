@@ -7,6 +7,8 @@ from app.crud.user import (
 from app.core.security import verify_password, create_access_token, decode_token
 from app.schemas.user import UserCreate, UserLogin, UserOut, Token
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from app.core.security import hash_password
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security_scheme = HTTPBearer()
@@ -55,4 +57,43 @@ async def require_admin(current_user=Depends(get_current_user)):
 @router.get("/me", response_model=UserOut)
 async def me(current_user=Depends(get_current_user)):
     return current_user
+
+
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str
+
+class ChangeEmail(BaseModel):
+    new_email: str
+    current_password: str   # require password to change email (security)
+
+@router.patch("/me/password")
+async def change_my_password(
+    payload: ChangePassword,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="current password is incorrect")
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="new password must be at least 6 characters")
+    current_user.hashed_password = hash_password(payload.new_password)
+    await db.commit()
+    return {"status": "password updated"}
+
+@router.patch("/me/email")
+async def change_my_email(
+    payload: ChangeEmail,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="password is incorrect")
+    # check the new email isn't taken
+    existing = await get_user_by_email(db, payload.new_email)
+    if existing and existing.id != current_user.id:
+        raise HTTPException(status_code=400, detail="email already in use")
+    current_user.email = payload.new_email
+    await db.commit()
+    return {"status": "email updated", "email": current_user.email}
 
