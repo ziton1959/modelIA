@@ -9,6 +9,7 @@ from app.database import AsyncSessionLocal
 from app.routes.auth import get_current_user
 from ai_agent.orchestrator import parse_vm_request, check_missing, finalize_spec
 from ai_agent.executor import execute_pipeline
+from app.core.settings_store import get_setting_sync
 
 router = APIRouter(prefix="/api/vm", tags=["vm-create"])
 
@@ -85,6 +86,13 @@ async def start_build(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    # Maintenance mode: block new builds when the admin has enabled it.
+    if get_setting_sync("maintenance_mode", "false").lower() == "true":
+        raise HTTPException(
+            status_code=503,
+            detail="The platform is under maintenance. Builds are temporarily disabled.",
+        )
+
     job = await get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")

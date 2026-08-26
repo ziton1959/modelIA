@@ -3,7 +3,8 @@ import json
 import re
 from typing import Optional
 
-MODEL = "llama3.1:8b"
+# Fallback if settings can't be read
+DEFAULT_MODEL = "llama3.1:8b"
 
 SYSTEM_PROMPT = """You are a VM provisioning assistant for an enterprise platform.
 
@@ -59,6 +60,15 @@ SUGGESTIONS = {
 SUPPORTED_OS = ["Ubuntu 22.04", "Ubuntu 24.04", "Debian 12", "Rocky 9"]
 
 
+def _get_setting(key, default):
+    """Read a setting, falling back gracefully if the store is unavailable."""
+    try:
+        from app.core.settings_store import get_setting_sync
+        return get_setting_sync(key, default)
+    except Exception:
+        return default
+
+
 def extract_json(text):
     text = re.sub(r"```json|```", "", text).strip()
     try:
@@ -74,6 +84,9 @@ def extract_json(text):
 
 
 def check_missing(spec):
+    if not spec or not isinstance(spec, dict):
+        return []
+
     questions = []
 
     if not spec.get("os") or spec.get("os") == "null":
@@ -128,6 +141,20 @@ def check_missing(spec):
 
 
 def finalize_spec(spec):
+    # Fill any still-missing fields from admin-configured defaults.
+    if not spec.get("cpu"):
+        try:
+            spec["cpu"] = int(_get_setting("default_cpu", "2"))
+        except (ValueError, TypeError):
+            spec["cpu"] = 2
+    if not spec.get("ram_gb"):
+        try:
+            spec["ram_gb"] = int(_get_setting("default_ram_gb", "4"))
+        except (ValueError, TypeError):
+            spec["ram_gb"] = 4
+    if not spec.get("os"):
+        spec["os"] = _get_setting("default_os", "Ubuntu 22.04")
+
     if not spec.get("template_name"):
         packages_slug = "-".join(str(p).lower() for p in spec.get("packages", []))
         os_slug = spec["os"].lower().replace(" ", "-").replace(".", "")
@@ -136,9 +163,10 @@ def finalize_spec(spec):
 
 
 async def parse_vm_request(user_prompt):
+    model = _get_setting("active_model", DEFAULT_MODEL)
     client = ollama.AsyncClient(host="http://127.0.0.1:11434")
     response = await client.generate(
-        model=MODEL,
+        model=model,
         prompt=SYSTEM_PROMPT + "\n\nUser request: " + user_prompt,
         stream=False,
         format="json",
