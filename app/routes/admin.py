@@ -345,3 +345,95 @@ async def update_settings(
     result = await db.execute(sa_select(Setting))
     rows = result.scalars().all()
     return {r.key: r.value for r in rows}
+
+@router.get("/stats/detailed")
+async def stats_detailed(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    result = await db.execute(select(Job))
+    jobs = result.scalars().all()
+
+    # Pull VM configs for the jobs (for OS + packages)
+    vm_cache = {}
+    async def get_vm_config(vm_id):
+        if vm_id in vm_cache:
+            return vm_cache[vm_id]
+        if not vm_id:
+            return {}
+        r = await db.execute(select(VM).where(VM.id == vm_id))
+        vm = r.scalar_one_or_none()
+        cfg = (vm.config if vm else {}) or {}
+        vm_cache[vm_id] = cfg
+        return cfg
+
+    def normalize_os(name):
+        if not name:
+            return "Unknown"
+        n = name.strip().lower()
+        if n.startswith("ubuntu"): return "Ubuntu"
+        if n.startswith("debian"): return "Debian"
+        if n.startswith("rocky"): return "Rocky"
+        return "Unknown"
+
+    # --- Average build duration (overall + per OS) ---
+    durations = []          # overall, seconds
+    os_durations = {}       # os -> list of seconds
+    for j in jobs:
+        if j.status == "completed" and j.created_at and j.finished_at:
+            secs = (j.finished_at - j.created_at).total_seconds()
+            if 0 < secs < 3600:   # sanity bound
+                durations.append(secs)
+                cfg = await get_vm_config(j.vm_id)
+                os_name = normalize_os(cfg.get("os"))
+                os_durations.setdefault(os_name, []).append(secs)
+
+    avg_duration = round(sum(durations) / len(durations)) if durations else 0
+    duration_by_os = [
+        {"os": os_name, "avg_seconds": round(sum(v) / len(v))}
+        for os_name, v in os_durations.items()
+    ]
+
+    # --- Most requested packages ---
+    from collections import Counter
+    pkg_counter = Counter()
+    for j in jobs:
+        cfg = await get_vm_config(j.vm_id)
+        for p in cfg.get("packages", []):
+            pkg_counter[str(p).lower()] += 1
+    top_packages = [{"package": p, "count": c} for p, c in pkg_counter.most_common(10)]
+
+    # --- Builds per user ---
+    user_counter = Counter()
+    for j in jobs:
+        if j.owner_id:
+            user_counter[j.owner_id] += 1
+    builds_per_user = []
+    for uid, count in user_counter.most_common(10):
+        u = await get_user(db, uid)
+        builds_per_user.append({"user": u.username if u else f"#{uid}", "count": count})
+
+    # --- Failures by phase ---
+    # Infer phase from the logs of failed jobs (best-effort).
+    phase_counter = Counter()
+    PHASE_KEYS = {
+        "fetching_base": "Fetching base",
+        "booting_vm": "Booting VM",
+        "installing_packages": "Installing packages",
+        "storing_image": "Storing image",
+    }
+    for j in jobs:
+        if j.status == "failed":
+            logs = (j.logs or "").lower()
+            matched = None
+            for key, label in PHASE_KEYS.items():
+                if key in logs:
+                    matched = label
+            phase_counter[matched or "Unknown"] += 1
+    failures_by_phase = [{"phase": p, "count": c} for p, c in phase_counter.items()]
+
+    return {
+        "avg_duration_seconds": avg_duration,
+        "duration_by_os": duration_by_os,
+        "top_packages": top_packages,
+        "builds_per_user": builds_per_user,
+        "failures_by_phase": failures_by_phase,
+        "total_completed": len(durations),
+    }
