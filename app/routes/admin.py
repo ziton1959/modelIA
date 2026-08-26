@@ -19,7 +19,9 @@ from app.schemas.user import UserOut
 from pydantic import BaseModel, EmailStr
 from app.models.setting import Setting
 from sqlalchemy import select as sa_select
-
+from app.models.audit import AuditLog
+from app.schemas.user import UserOut
+from pydantic import BaseModel, EmailStr
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
@@ -94,6 +96,7 @@ async def change_role(
         raise HTTPException(status_code=404, detail="user not found")
     user.role = new_role
     await db.commit()
+    await log_action(db, admin, "change_role", f"user:{user_id}", f"role set to {new_role}")
     return {"id": user_id, "role": new_role}
 
 
@@ -111,6 +114,8 @@ async def archive_user(
         raise HTTPException(status_code=404, detail="user not found")
     user.is_active = payload.get("is_active", False)
     await db.commit()
+    action = "unarchive_user" if user.is_active else "archive_user"
+    await log_action(db, admin, action, f"user:{user_id}", f"username={user.username}")
     return {"id": user_id, "is_active": user.is_active}
 
 
@@ -149,6 +154,7 @@ async def delete_image(image_name: str, admin=Depends(require_admin)):
         client.remove_object(BUILT_BUCKET, object_name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"could not delete: {e}")
+    await log_action(db, admin, "delete_image", object_name, "")
     return {"deleted": object_name}
 
 @router.get("/health")
@@ -293,10 +299,10 @@ async def admin_delete_build(
         raise HTTPException(status_code=404, detail="build not found")
     await db.delete(job)
     await db.commit()
+    await log_action(db, admin, "delete_build", f"job:{job_id}", "")
     return {"deleted": job_id}
 
-from app.schemas.user import UserOut
-from pydantic import BaseModel, EmailStr
+
 
 class AdminUserCreate(BaseModel):
     username: str
@@ -317,6 +323,7 @@ async def admin_create_user(
         raise HTTPException(status_code=400, detail="email already registered")
     role = payload.role if payload.role in ("user", "admin") else "user"
     user = await create_user(db, payload.username.strip(), payload.email, payload.password, role)
+    await log_action(db, admin, "create_user", f"user:{user.id}", f"username={user.username}, role={role}")
     return {"id": user.id, "username": user.username, "email": user.email, "role": user.role}
 
 
@@ -344,6 +351,7 @@ async def update_settings(
     # return the full updated set
     result = await db.execute(sa_select(Setting))
     rows = result.scalars().all()
+    await log_action(db, admin, "update_settings", "", str(payload))
     return {r.key: r.value for r in rows}
 
 @router.get("/stats/detailed")
@@ -437,3 +445,40 @@ async def stats_detailed(db: AsyncSession = Depends(get_db), admin=Depends(requi
         "failures_by_phase": failures_by_phase,
         "total_completed": len(durations),
     }
+
+async def log_action(db, actor, action: str, target: str = "", details: str = ""):
+    """Record an admin action in the audit log."""
+    try:
+        entry = AuditLog(
+            actor_id=actor.id,
+            actor_name=actor.username,
+            action=action,
+            target=str(target),
+            details=details,
+        )
+        db.add(entry)
+        await db.commit()
+    except Exception:
+        await db.rollback()  # logging must never break the actual operation
+
+   @router.get("/audit")
+async def get_audit_log(
+    limit: int = Query(100),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    result = await db.execute(
+        select(AuditLog).order_by(desc(AuditLog.created_at)).limit(limit)
+    )
+    entries = result.scalars().all()
+    return [
+        {
+            "id": e.id,
+            "actor": e.actor_name,
+            "action": e.action,
+            "target": e.target,
+            "details": e.details,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in entries
+    ]
