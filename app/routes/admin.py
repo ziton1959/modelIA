@@ -461,7 +461,8 @@ async def log_action(db, actor, action: str, target: str = "", details: str = ""
     except Exception:
         await db.rollback()  # logging must never break the actual operation
 
-   @router.get("/audit")
+
+@router.get("/audit")
 async def get_audit_log(
     limit: int = Query(100),
     db: AsyncSession = Depends(get_db),
