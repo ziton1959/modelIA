@@ -17,6 +17,8 @@ from typing import Optional
 from app.crud.job import get_job
 from app.schemas.user import UserOut
 from pydantic import BaseModel, EmailStr
+from app.models.setting import Setting
+from sqlalchemy import select as sa_select
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -316,3 +318,30 @@ async def admin_create_user(
     role = payload.role if payload.role in ("user", "admin") else "user"
     user = await create_user(db, payload.username.strip(), payload.email, payload.password, role)
     return {"id": user.id, "username": user.username, "email": user.email, "role": user.role}
+
+
+@router.get("/settings")
+async def get_settings(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
+    result = await db.execute(sa_select(Setting))
+    rows = result.scalars().all()
+    return {r.key: r.value for r in rows}
+
+@router.patch("/settings")
+async def update_settings(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    # payload is {key: value, ...}
+    for key, value in payload.items():
+        result = await db.execute(sa_select(Setting).where(Setting.key == key))
+        setting = result.scalar_one_or_none()
+        if setting:
+            setting.value = str(value)
+        else:
+            db.add(Setting(key=key, value=str(value)))
+    await db.commit()
+    # return the full updated set
+    result = await db.execute(sa_select(Setting))
+    rows = result.scalars().all()
+    return {r.key: r.value for r in rows}
