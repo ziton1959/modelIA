@@ -117,15 +117,15 @@ def check_missing(spec):
 
     for pkg in spec.get("packages", []):
         if str(pkg).lower() in SPECIAL_PACKAGES:
-         # skip if we've already clarified this package
-        if str(pkg).lower() in [c.lower() for c in spec.get("_clarified", [])]:
-         continue
-         sp = SPECIAL_PACKAGES[str(pkg).lower()]
-         questions.append({
-          "field": "pkg_" + str(pkg).lower(), "type": "package_clarify",
-          "package": str(pkg).lower(),
-          "question": sp["question"],
-          "options": sp["options"],
+            # skip if we've already clarified this package
+            if str(pkg).lower() in [c.lower() for c in spec.get("_clarified", [])]:
+                continue
+            sp = SPECIAL_PACKAGES[str(pkg).lower()]
+            questions.append({
+                "field": "pkg_" + str(pkg).lower(), "type": "package_clarify",
+                "package": str(pkg).lower(),
+                "question": sp["question"],
+                "options": sp["options"],
             })
 
     if not questions and not spec.get("_suggested"):
