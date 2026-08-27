@@ -181,4 +181,33 @@ async def parse_vm_request(user_prompt):
         return {"error": "failed to parse LLM response", "raw": raw}
     if spec.get("status") == "failed":
         return {"error": spec.get("error", "unsupported request")}
+    spec = validate_packages(spec)   # ← add this
+    return spec
+
+# Known-good package names (defaults + recipes)
+KNOWN_PACKAGES = {
+    "docker", "docker-ce", "docker-compose", "python", "python3", "python3-pip",
+    "nginx", "nodejs", "npm", "git", "curl", "wget", "vim", "htop",
+    "terraform", "kubectl", "certbot",
+}
+
+def validate_packages(spec):
+    """Correct obvious typos and flag unknown packages."""
+    import difflib
+    corrected = []
+    unknown = []
+    for pkg in spec.get("packages", []):
+        p = str(pkg).lower().strip()
+        if p in KNOWN_PACKAGES:
+            corrected.append(p)
+        else:
+            # try to find a close match (catches kubrctl -> kubectl)
+            match = difflib.get_close_matches(p, KNOWN_PACKAGES, n=1, cutoff=0.75)
+            if match:
+                corrected.append(match[0])
+            else:
+                unknown.append(p)
+    spec["packages"] = corrected
+    if unknown:
+        spec["_unknown_packages"] = unknown
     return spec
