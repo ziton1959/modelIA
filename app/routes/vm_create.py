@@ -10,6 +10,8 @@ from app.routes.auth import get_current_user
 from ai_agent.orchestrator import parse_vm_request, check_missing, finalize_spec
 from ai_agent.executor import execute_pipeline
 from app.core.settings_store import get_setting_sync
+from ai_agent.orchestrator import explain_failure
+
 
 router = APIRouter(prefix="/api/vm", tags=["vm-create"])
 
@@ -105,3 +107,19 @@ async def start_build(
     spec = vm.config
     background_tasks.add_task(run_pipeline_background, job_id, spec)
     return {"status": "queued", "job_id": job_id}
+
+
+@router.get("/explain/{job_id}")
+async def explain_build_failure(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    job = await get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    # Only owner or admin can request an explanation
+    if job.owner_id != current_user.id and getattr(current_user, "role", "") != "admin":
+        raise HTTPException(status_code=403, detail="not allowed")
+    explanation = await explain_failure(job.logs or "")
+    return {"job_id": job_id, "explanation": explanation}
