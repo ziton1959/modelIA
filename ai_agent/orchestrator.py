@@ -15,7 +15,7 @@ SUPPORTED OPERATING SYSTEMS:
 - Rocky 9
 
 SUPPORTED PACKAGES:
-- docker, python, nginx, nodejs, git, curl, wget, vim, htop
+- docker, docker-ce, python, nginx, nodejs, git, curl, wget, vim, htop, terraform, kubectl
 
 RULES:
 1. Respond with VALID JSON ONLY. No explanation, no markdown, no code blocks.
@@ -31,6 +31,7 @@ RULES:
 3. IMPORTANT: Do NOT invent defaults. If the user did not say an OS, set "os": null. If no CPU, "cpu": null. If no RAM, "ram_gb": null. Only fill fields the user actually mentioned.
 4. If the user requests an UNSUPPORTED OS (Windows, Fedora, Arch, CentOS, RedHat), respond:
    {"status": "failed", "error": "UNAVAILABLE: The operating system is not supported. Supported: Ubuntu 22.04, Ubuntu 24.04, Debian 12, Rocky 9."}
+5. Extract ALL software/tools the user mentions into "packages", even if you're unsure — include terraform, kubectl, docker-ce, etc. Do not drop a requested tool.
 """
 
 SPECIAL_PACKAGES = {
