@@ -343,33 +343,37 @@ async def parse_vm_request(user_prompt):
 
 async def explain_failure(logs: str):
     """Ask the model to explain a build failure in plain language."""
+    if not logs or not logs.strip():
+        return "No log output was captured, so the cause can't be determined. Try rebuilding, or check that the base image and services are available."
 
-    # Only send the tail — the relevant error is usually at the end.
-    tail = (logs or "")[-3000:]
+    # Extract the most relevant lines: Ansible errors, failed tasks, package errors.
+    lines = logs.splitlines()
+    relevant = []
+    keywords = ("fatal:", "failed!", "no package", "error:", "unable to",
+                "could not", "not found", "no matching", "task [", "msg:")
+    for line in lines:
+        low = line.lower()
+        if any(k in low for k in keywords):
+            # strip ANSI codes and packer prefixes for clarity
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", line)
+            clean = clean.replace("==> qemu.base:", "").strip()
+            if clean:
+                relevant.append(clean)
 
-    if not tail.strip():
-        return (
-            "No log output was captured, so the cause can't be "
-            "determined. Try rebuilding, or check that the base "
-            "image and services are available."
-        )
+    # Build the context: prioritized relevant lines + a bit of the tail as fallback
+    if relevant:
+        context = "\n".join(relevant[-25:])   # last 25 relevant lines
+    else:
+        context = logs[-2500:]
 
     model = _get_setting("active_model", DEFAULT_MODEL)
-
-    client = ollama.AsyncClient(
-        host="http://127.0.0.1:11434"
-    )
-
+    client = ollama.AsyncClient(host="http://127.0.0.1:11434")
     try:
         response = await client.generate(
             model=model,
-            prompt=FAILURE_PROMPT + tail,
+            prompt=FAILURE_PROMPT + context,
             stream=False,
         )
-
         return response["response"].strip()
-
     except Exception as e:
-        return (
-            f"Could not analyze the failure automatically ({e})."
-        )
+        return f"Could not analyze the failure automatically ({e})."
