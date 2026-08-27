@@ -9,6 +9,7 @@ from app.models.job import Job
 from app.routes.auth import get_current_user
 from typing import List
 
+
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
@@ -46,6 +47,20 @@ async def my_history(
     return out
 
 
+@router.delete("/mine/history")
+async def clear_my_history(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    result = await db.execute(select(Job).where(Job.owner_id == current_user.id))
+    jobs = result.scalars().all()
+    count = len(jobs)
+    for j in jobs:
+        await db.delete(j)
+    await db.commit()
+    return {"deleted": count}
+
+
 @router.get("/mine/history/{job_id}")
 async def my_history_detail(
     job_id: int,
@@ -62,6 +77,20 @@ async def my_history_detail(
         "spec": vm.config if vm else {},
         "created_at": job.created_at.isoformat() if job.created_at else None,
     }
+
+
+@router.delete("/mine/history/{job_id}")
+async def delete_my_history_item(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    job = await get_job(db, job_id)
+    if not job or job.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="not found")
+    await db.delete(job)
+    await db.commit()
+    return {"deleted": job_id}
 
 
 @router.get("/{job_id}", response_model=JobOut)
